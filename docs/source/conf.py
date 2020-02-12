@@ -110,7 +110,6 @@ autodoc_mock_imports = [
     "numpy",
     "torch",
 ]
-
 # If true, the current module name will be prepended to all description
 # unit titles (such as .. function::).
 add_module_names = False

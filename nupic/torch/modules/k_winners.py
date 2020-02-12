@@ -29,7 +29,8 @@ from nupic.torch.duty_cycle_metrics import binary_entropy, max_entropy
 
 
 def update_boost_strength(m):
-    """Function used to update KWinner modules boost strength after each epoch.
+    """Function used to update KWinner modules boost strength. This is typically done
+    during training at the beginning of each epoch.
 
     Call using :meth:`torch.nn.Module.apply` after each epoch if required
     For example: ``m.apply(update_boost_strength)``
@@ -41,6 +42,32 @@ def update_boost_strength(m):
 
 
 class KWinnersBase(nn.Module, metaclass=abc.ABCMeta):
+    """Base KWinners class.
+
+    :param percent_on:
+      The activity of the top k = percent_on * number of input units will be
+      allowed to remain, the rest are set to zero.
+    :type percent_on: float
+
+    :param k_inference_factor:
+      During inference (training=False) we increase percent_on by this factor.
+      percent_on * k_inference_factor must be strictly less than 1.0, ideally much
+      lower than 1.0
+    :type k_inference_factor: float
+
+    :param boost_strength:
+      boost strength (0.0 implies no boosting). Must be >= 0.0
+    :type boost_strength: float
+
+    :param boost_strength_factor:
+      Boost strength factor to use [0..1]
+    :type boost_strength_factor: float
+
+    :param duty_cycle_period:
+      The period used to calculate duty cycles
+    :type duty_cycle_period: int
+    """
+
     def __init__(
         self,
         percent_on,
@@ -49,31 +76,6 @@ class KWinnersBase(nn.Module, metaclass=abc.ABCMeta):
         boost_strength_factor=1.0,
         duty_cycle_period=1000,
     ):
-        """Base KWinners class.
-
-        :param percent_on:
-          The activity of the top k = percent_on * number of input units will be
-          allowed to remain, the rest are set to zero.
-        :type percent_on: float
-
-        :param k_inference_factor:
-          During inference (training=False) we increase percent_on by this factor.
-          percent_on * k_inference_factor must be strictly less than 1.0, ideally much
-          lower than 1.0
-        :type k_inference_factor: float
-
-        :param boost_strength:
-          boost strength (0.0 implies no boosting). Must be >= 0.0
-        :type boost_strength: float
-
-        :param boost_strength_factor:
-          Boost strength factor to use [0..1]
-        :type boost_strength_factor: float
-
-        :param duty_cycle_period:
-          The period used to calculate duty cycles
-        :type duty_cycle_period: int
-        """
         super(KWinnersBase, self).__init__()
         assert boost_strength >= 0.0
         assert 0.0 <= boost_strength_factor <= 1.0
@@ -89,7 +91,8 @@ class KWinnersBase(nn.Module, metaclass=abc.ABCMeta):
         self.k_inference = 0
 
         # Boosting related parameters
-        self.boost_strength = boost_strength
+        self.register_buffer("boost_strength", torch.tensor(boost_strength,
+                                                            dtype=torch.float))
         self.boost_strength_factor = boost_strength_factor
         self.duty_cycle_period = duty_cycle_period
 
@@ -118,11 +121,10 @@ class KWinnersBase(nn.Module, metaclass=abc.ABCMeta):
         raise NotImplementedError
 
     def update_boost_strength(self):
-        """Update boost strength using given strength factor during
-        training.
+        """Update boost strength by multiplying by the boost strength factor.
+        This is typically done during training at the beginning of each epoch.
         """
-        if self.training:
-            self.boost_strength = self.boost_strength * self.boost_strength_factor
+        self.boost_strength *= self.boost_strength_factor
 
     def entropy(self):
         """Returns the current total entropy of this layer."""
@@ -135,6 +137,38 @@ class KWinnersBase(nn.Module, metaclass=abc.ABCMeta):
 
 
 class KWinners(KWinnersBase):
+    """Applies K-Winner function to the input tensor.
+
+    See :class:`htmresearch.frameworks.pytorch.functions.k_winners`
+
+    :param n:
+      Number of units
+    :type n: int
+
+    :param percent_on:
+      The activity of the top k = percent_on * n will be allowed to remain, the
+      rest are set to zero.
+    :type percent_on: float
+
+    :param k_inference_factor:
+      During inference (training=False) we increase percent_on by this factor.
+      percent_on * k_inference_factor must be strictly less than 1.0, ideally much
+      lower than 1.0
+    :type k_inference_factor: float
+
+    :param boost_strength:
+      boost strength (0.0 implies no boosting).
+    :type boost_strength: float
+
+    :param boost_strength_factor:
+      Boost strength factor to use [0..1]
+    :type boost_strength_factor: float
+
+    :param duty_cycle_period:
+      The period used to calculate duty cycles
+    :type duty_cycle_period: int
+    """
+
     def __init__(
         self,
         n,
@@ -144,36 +178,7 @@ class KWinners(KWinnersBase):
         boost_strength_factor=0.9,
         duty_cycle_period=1000,
     ):
-        """Applies K-Winner function to the input tensor.
 
-        See :class:`htmresearch.frameworks.pytorch.functions.k_winners`
-        :param n:
-          Number of units
-        :type n: int
-
-        :param percent_on:
-          The activity of the top k = percent_on * n will be allowed to remain, the
-          rest are set to zero.
-        :type percent_on: float
-
-        :param k_inference_factor:
-          During inference (training=False) we increase percent_on by this factor.
-          percent_on * k_inference_factor must be strictly less than 1.0, ideally much
-          lower than 1.0
-        :type k_inference_factor: float
-
-        :param boost_strength:
-          boost strength (0.0 implies no boosting).
-        :type boost_strength: float
-
-        :param boost_strength_factor:
-          Boost strength factor to use [0..1]
-        :type boost_strength_factor: float
-
-        :param duty_cycle_period:
-          The period used to calculate duty cycles
-        :type duty_cycle_period: int
-        """
         super(KWinners, self).__init__(
             percent_on=percent_on,
             k_inference_factor=k_inference_factor,
@@ -192,9 +197,8 @@ class KWinners(KWinnersBase):
             x = F.KWinners.apply(x, self.duty_cycle, self.k, self.boost_strength)
             self.update_duty_cycle(x)
         else:
-            x = F.KWinners.apply(
-                x, self.duty_cycle, self.k_inference, self.boost_strength
-            )
+            x = F.KWinners.apply(x, self.duty_cycle, self.k_inference,
+                                 self.boost_strength)
 
         return x
 
@@ -208,6 +212,45 @@ class KWinners(KWinnersBase):
 
 
 class KWinners2d(KWinnersBase):
+    """
+    Applies K-Winner function to the input tensor.
+
+    See :class:`htmresearch.frameworks.pytorch.functions.k_winners2d`
+
+    :param channels:
+      Number of channels (filters) in the convolutional layer.
+    :type channels: int
+
+    :param percent_on:
+      The activity of the top k = percent_on * number of input units will be
+      allowed to remain, the rest are set to zero.
+    :type percent_on: float
+
+    :param k_inference_factor:
+      During inference (training=False) we increase percent_on by this factor.
+      percent_on * k_inference_factor must be strictly less than 1.0, ideally much
+      lower than 1.0
+    :type k_inference_factor: float
+
+    :param boost_strength:
+      boost strength (0.0 implies no boosting).
+    :type boost_strength: float
+
+    :param boost_strength_factor:
+      Boost strength factor to use [0..1]
+    :type boost_strength_factor: float
+
+    :param duty_cycle_period:
+      The period used to calculate duty cycles
+    :type duty_cycle_period: int
+
+    :param local:
+        Whether or not to choose the k-winners locally (across the channels
+        at each location) or globally (across the whole input and across
+        all channels).
+    :type local: bool
+    """
+
     def __init__(
         self,
         channels,
@@ -216,39 +259,9 @@ class KWinners2d(KWinnersBase):
         boost_strength=1.0,
         boost_strength_factor=0.9,
         duty_cycle_period=1000,
+        local=False
     ):
-        """Applies K-Winner function to the input tensor.
 
-            See :class:`htmresearch.frameworks.pytorch.functions.k_winners2d`
-
-
-        :param channels:
-          Number of channels (filters) in the convolutional layer.
-        :type channels: int
-
-        :param percent_on:
-          The activity of the top k = percent_on * number of input units will be
-          allowed to remain, the rest are set to zero.
-        :type percent_on: float
-
-        :param k_inference_factor:
-          During inference (training=False) we increase percent_on by this factor.
-          percent_on * k_inference_factor must be strictly less than 1.0, ideally much
-          lower than 1.0
-        :type k_inference_factor: float
-
-        :param boost_strength:
-          boost strength (0.0 implies no boosting).
-        :type boost_strength: float
-
-        :param boost_strength_factor:
-          Boost strength factor to use [0..1]
-        :type boost_strength_factor: float
-
-        :param duty_cycle_period:
-          The period used to calculate duty cycles
-        :type duty_cycle_period: int
-        """
         super(KWinners2d, self).__init__(
             percent_on=percent_on,
             k_inference_factor=k_inference_factor,
@@ -258,23 +271,30 @@ class KWinners2d(KWinnersBase):
         )
 
         self.channels = channels
+        self.local = local
+        if local:
+            self.k = int(round(self.channels * self.percent_on))
+            self.k_inference = int(round(self.channels * self.percent_on_inference))
+            self.kwinner_function = F.KWinners2dLocal.apply
+        else:
+            self.kwinner_function = F.KWinners2dGlobal.apply
+
         self.register_buffer("duty_cycle", torch.zeros((1, channels, 1, 1)))
 
     def forward(self, x):
 
         if self.n == 0:
             self.n = np.prod(x.shape[1:])
-            self.k = int(round(self.n * self.percent_on))
-            self.k_inference = int(round(self.n * self.percent_on_inference))
+            if not self.local:
+                self.k = int(round(self.n * self.percent_on))
+                self.k_inference = int(round(self.n * self.percent_on_inference))
 
         if self.training:
-            x = F.KWinners2d.apply(x, self.duty_cycle, self.k, self.boost_strength)
+            x = self.kwinner_function(x, self.duty_cycle, self.k, self.boost_strength)
             self.update_duty_cycle(x)
-
         else:
-            x = F.KWinners2d.apply(
-                x, self.duty_cycle, self.k_inference, self.boost_strength
-            )
+            x = self.kwinner_function(x, self.duty_cycle, self.k_inference,
+                                      self.boost_strength)
 
         return x
 
@@ -294,6 +314,6 @@ class KWinners2d(KWinnersBase):
         return entropy * self.n / self.channels
 
     def extra_repr(self):
-        return "channels={}, {}".format(
-            self.channels, super(KWinners2d, self).extra_repr()
+        return "channels={}, local={}, {}".format(
+            self.channels, self.local, super(KWinners2d, self).extra_repr()
         )
